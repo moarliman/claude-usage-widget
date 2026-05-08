@@ -3,7 +3,7 @@
 import argparse
 import sys
 import time
-from datetime import datetime
+from datetime import datetime, date, timedelta
 
 from fetch_usage import RateLimited, fetch_usage, get_token
 
@@ -28,6 +28,54 @@ def color_for(util):
     return RED
 
 
+def working_days_progress():
+    """Return (elapsed, total) working days in the current month."""
+    today = date.today()
+    year, month = today.year, today.month
+    total = 0
+    elapsed = 0
+    d = date(year, month, 1)
+    while d.month == month:
+        if d.weekday() < 5:
+            total += 1
+            if d <= today:
+                elapsed += 1
+        d += timedelta(days=1)
+    return elapsed, total
+
+
+def next_month_first():
+    today = date.today()
+    if today.month == 12:
+        return date(today.year + 1, 1, 1)
+    return date(today.year, today.month + 1, 1)
+
+
+def render_bar(color, util, wd_frac):
+    filled = int(round(util * BAR_WIDTH))
+    marker = min(int(round(wd_frac * BAR_WIDTH)), BAR_WIDTH - 1)
+
+    def colored_chars(start, end):
+        if start >= end:
+            return ""
+        parts = []
+        cur = None
+        for i in range(start, end):
+            c = color if i < filled else DIM
+            if c != cur:
+                parts.append(c)
+                cur = c
+            parts.append("█" if i < filled else "░")
+        return "".join(parts)
+
+    before = colored_chars(0, marker)
+    after = colored_chars(marker + 1, BAR_WIDTH)
+    after_lead = color if marker + 1 < filled else DIM
+    if after:
+        return f"{before}{RESET}|{after_lead}{after}{RESET}"
+    return f"{before}{RESET}|{RESET}"
+
+
 def render(usage, status_line):
     eu = usage.get("extra_usage") or {}
     used_cents = eu.get("used_credits") or 0
@@ -35,18 +83,21 @@ def render(usage, status_line):
     util = (used_cents / limit_cents) if limit_cents else 0
 
     color = color_for(util)
-    filled = int(round(util * BAR_WIDTH))
-    bar = f"{color}{'█' * filled}{DIM}{'░' * (BAR_WIDTH - filled)}{RESET}"
+    wd_elapsed, wd_total = working_days_progress()
+    wd_frac = wd_elapsed / wd_total if wd_total else 0
+    bar = render_bar(color, util, wd_frac)
 
     used = f"${used_cents / 100:,.2f}"
     limit = f"${limit_cents / 100:,.2f}"
     pct = f"{util * 100:.1f}%"
+    reset_date = next_month_first().strftime("%b %-d")
+    wd_label = f"wd {wd_elapsed}/{wd_total}"
 
     return "\n".join([
         "",
         f"  {BOLD}Claude Code Usage{RESET}",
         "",
-        f"  {used} / {limit}    {color}{pct} used{RESET}",
+        f"  {used} / {limit}    {color}{pct} used{RESET}    {DIM}resets {reset_date}  {wd_label}{RESET}",
         f"  {bar}",
         "",
         f"  {DIM}{status_line} · Ctrl+C to exit{RESET}",
@@ -56,8 +107,8 @@ def render(usage, status_line):
 
 def main():
     parser = argparse.ArgumentParser(description="Live Claude Code usage widget")
-    parser.add_argument("-i", "--interval", type=int, default=60,
-                        help="refresh interval in seconds (default: 60)")
+    parser.add_argument("-i", "--interval", type=int, default=120,
+                        help="refresh interval in seconds (default: 120)")
     args = parser.parse_args()
 
     sys.stdout.write(HIDE_CURSOR)
